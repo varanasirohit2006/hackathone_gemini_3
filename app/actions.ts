@@ -1,44 +1,67 @@
 'use server';
 
-import { GoogleGenerativeAI, GenerationConfig } from '@google/generative-ai';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 
 const apiKey = process.env.GEMINI_API_KEY;
+const genAI = apiKey ? new GoogleGenerativeAI(apiKey) : null;
 
-// Helper to get model
-const getModel = (jsonMode: boolean = false) => {
-    if (!apiKey) throw new Error("GEMINI_API_KEY is not set");
-    const genAI = new GoogleGenerativeAI(apiKey);
-    const config: GenerationConfig = jsonMode ? { responseMimeType: "application/json" } : {};
-    return genAI.getGenerativeModel({
-        model: "gemini-2.0-flash",
-        generationConfig: config
-    });
-};
+const MODEL_NAME = 'gemini-2.5-flash';
 
-export async function analyzeImageWithGemini(base64Image: string) {
-    try {
-        if (!apiKey) return { error: true, message: "API Key Missing" };
+// Helper: call Gemini with text-only prompt and get JSON back
+async function callGemini(prompt: string): Promise<any> {
+    if (!genAI) throw new Error('No API Key');
+    const model = genAI.getGenerativeModel({ model: MODEL_NAME });
+    const result = await model.generateContent(prompt);
+    const response = await result.response;
+    const text = response.text();
+    // Extract JSON from response (handle markdown code fences)
+    const jsonMatch = text.match(/```json\s*([\s\S]*?)```/) || text.match(/```\s*([\s\S]*?)```/);
+    const jsonStr = jsonMatch ? jsonMatch[1].trim() : text.trim();
+    return JSON.parse(jsonStr);
+}
 
-        const model = getModel(true);
+// Helper: call Gemini with image + text prompt
+async function callGeminiWithImage(prompt: string, base64Image: string): Promise<any> {
+    if (!genAI) throw new Error('No API Key');
+    const model = genAI.getGenerativeModel({ model: MODEL_NAME });
 
-        let imageData = base64Image;
-        let mimeType = "image/jpeg";
+    // Extract the mime type and base64 data
+    let mimeType = 'image/jpeg';
+    let imageData = base64Image;
 
-        // Robust Data URI Parsing
-        if (base64Image.includes('data:')) {
-            const matches = base64Image.match(/data:(.*?);base64,(.*)$/);
-            if (matches) {
-                mimeType = matches[1];
-                imageData = matches[2];
-            }
+    if (base64Image.startsWith('data:')) {
+        const match = base64Image.match(/^data:(image\/\w+);base64,(.+)$/);
+        if (match) {
+            mimeType = match[1];
+            imageData = match[2];
+        } else {
+            // If it's a data URL but doesn't match, strip the prefix
+            imageData = base64Image.split(',')[1] || base64Image;
         }
+    }
 
-        // Ensure supported mime types for Gemini 2.0
-        // If 'application/octet-stream', default to jpeg
-        if (mimeType === 'application/octet-stream') mimeType = 'image/jpeg';
+    const imagePart = {
+        inlineData: {
+            data: imageData,
+            mimeType: mimeType,
+        },
+    };
+
+    const result = await model.generateContent([prompt, imagePart]);
+    const response = await result.response;
+    const text = response.text();
+    // Extract JSON from response
+    const jsonMatch = text.match(/```json\s*([\s\S]*?)```/) || text.match(/```\s*([\s\S]*?)```/);
+    const jsonStr = jsonMatch ? jsonMatch[1].trim() : text.trim();
+    return JSON.parse(jsonStr);
+}
+
+export async function analyzeImage(base64Image: string) {
+    try {
+        if (!apiKey) return { error: true, message: "API Key (Gemini) Missing" };
 
         const prompt = `Analyze this image for waste management.
-        Output a JSON object with these fields:
+        Output a JSON object ONLY with these fields (no markdown, no extra text):
         {
             "wasteType": "string (e.g., Plastic, construction debris)",
             "hazardLevel": "string (High/Low)",
@@ -48,17 +71,18 @@ export async function analyzeImageWithGemini(base64Image: string) {
             "confidence": "number (0-1)"
         }`;
 
-        const result = await model.generateContent([
-            { text: prompt },
-            { inlineData: { mimeType, data: imageData } }
-        ]);
+        // If the image is a URL (not base64), use text-only with URL reference
+        if (base64Image.startsWith('http')) {
+            return await callGemini(prompt + `\n\nImage URL: ${base64Image}`);
+        }
 
-        return JSON.parse(result.response.text());
+        return await callGeminiWithImage(prompt, base64Image);
 
     } catch (error: any) {
-        console.error("Image Analysis Error:", error.message);
-        // Fallback for demo flow if image fails (e.g. rate limit or bad format)
+        console.error("Gemini Image Analysis Error:", error.message);
         return {
+            error: true,
+            message: error.message || 'Gemini API Error',
             wasteType: "Unidentified Object",
             hazardLevel: "Low",
             recommendation: "Manual Inspection Required (AI Error)",
@@ -67,49 +91,70 @@ export async function analyzeImageWithGemini(base64Image: string) {
     }
 }
 
-export async function analyzeAudioWithGemini(base64Audio: string) {
+export async function analyzeItemValue(base64Image: string) {
     try {
-        if (!apiKey) return { error: true, message: "API Key Missing" };
+        if (!apiKey) return {
+            error: true,
+            message: "API Key Missing",
+            itemName: "Unknown Item",
+            estimatedValue: 0,
+            currency: "USD",
+            recyclingPotential: "Unknown"
+        };
 
-        const model = getModel(true);
-
-        const audioData = base64Audio.split(',').pop() || base64Audio;
-
-        // Gemini supports: audio/wav, audio/mp3, audio/aiff, audio/aac, audio/ogg, audio/flac
-        // We'll default to webm or wav based on browser recorder
-        const prompt = `Listen to this waste management report.
-        JSON Output:
+        const prompt = `You are an expert appraiser for a recycling marketplace ("Trash-to-Cash").
+        Analyze this image and identify the main waste item.
+        Estimate its scrap/recycling market value.
+        
+        Output JSON ONLY (no markdown, no extra text):
         {
-            "transcription": "text",
-            "category": "Breakdown/Infrastructure/General",
-            "actionTrigger": "Re-route Fleet/Plan Municipal Shed/Dispatch Truck",
-            "summary": "concise"
+            "itemName": "string (e.g. Old Copper Wire, Plastic Bottles)",
+            "category": "string (Metal/Plastic/E-Waste/Organic)",
+            "estimatedValue": number,
+            "currency": "USD",
+            "condition": "string",
+            "recyclingPotential": "High | Medium | Low",
+            "marketDemand": "High | Low"
         }`;
 
-        const result = await model.generateContent([
-            { text: prompt },
-            { inlineData: { mimeType: "audio/webm", data: audioData } }
-        ]);
+        if (base64Image.startsWith('http')) {
+            return await callGemini(prompt + `\n\nImage URL: ${base64Image}`);
+        }
 
-        return JSON.parse(result.response.text());
+        return await callGeminiWithImage(prompt, base64Image);
 
     } catch (error: any) {
-        console.error("Audio Analysis Error:", error.message);
+        console.error("Gemini Value Analysis Error:", error.message);
         return {
-            transcription: "Audio processing failed. Please type report.",
-            category: "General",
-            actionTrigger: "Dispatch Truck",
-            summary: "Error in AI processing",
-            fallback: true
+            error: true,
+            message: error.message || 'Gemini API Error',
+            itemName: "Unidentified Recyclable",
+            category: "General Waste",
+            estimatedValue: 0.05,
+            currency: "USD",
+            condition: "Scrap",
+            recyclingPotential: "Medium",
+            marketDemand: "Medium"
         };
     }
+}
+
+export async function analyzeAudio(base64Audio: string) {
+    // Gemini 2.5 Flash supports audio natively, but for simplicity
+    // we use client-side Web Speech API for transcription.
+    return {
+        transcription: "Audio transcription handled by browser Speech API.",
+        category: "General",
+        actionTrigger: "Dispatch Truck",
+        summary: "Voice input processed on device.",
+        fallback: true
+    };
 }
 
 export async function getAIActionPlan(reportText: string) {
     try {
         if (!apiKey) return { riskLevel: 'Medium', actionType: 'LOG_ONLY', reasoning: 'AI Offline' };
 
-        const model = getModel();
         const prompt = `
         You are an Autonomous City Operations AI.
         Analyze this waste management report: "${reportText}"
@@ -123,7 +168,7 @@ export async function getAIActionPlan(reportText: string) {
         - If "full", "overflow": -> DISPATCH_TRUCK
         - Otherwise: -> LOG_ONLY
 
-        Return JSON ONLY:
+        Return JSON ONLY (no markdown, no extra text):
         {
             "riskLevel": "Low" | "Medium" | "High" | "Critical",
             "actionType": "REROUTE_FLEET" | "INSTALL_SHED" | "HAZMAT_TEAM" | "DISPATCH_TRUCK" | "LOG_ONLY",
@@ -131,24 +176,21 @@ export async function getAIActionPlan(reportText: string) {
         }
         `;
 
-        const result = await model.generateContent(prompt);
-        const text = result.response.text().replace(/```json|```/g, '').trim();
-        return JSON.parse(text.substring(text.indexOf('{'), text.lastIndexOf('}') + 1));
+        return await callGemini(prompt);
 
-    } catch (error) {
-        console.error("AI Plan Error:", error);
+    } catch (error: any) {
+        console.error("Gemini Plan Error:", error.message);
         return { riskLevel: 'Low', actionType: 'LOG_ONLY', reasoning: 'Fallback due to error' };
     }
 }
 
-export async function analyzeOperationsWithGemini(
+export async function analyzeOperations(
     query: string,
     context: { vehicleCount: number, activeAlerts: number, criticalAlerts: number }
 ) {
     try {
         if (!apiKey) throw new Error("No API Key");
 
-        const model = getModel(true); // Attempt JSON mode
         const prompt = `
         You are an advanced City Operations AI.
         User Query: "${query}"
@@ -157,7 +199,7 @@ export async function analyzeOperationsWithGemini(
         - Trucks: ${context.vehicleCount}
         - Alerts: ${context.activeAlerts} (Crit: ${context.criticalAlerts})
         
-        Analyze request. Return JSON:
+        Analyze request. Return JSON ONLY (no markdown, no extra text):
         {
             "text": "Response text",
             "suggestedActions": [
@@ -165,33 +207,22 @@ export async function analyzeOperationsWithGemini(
             ]
         }`;
 
-        const result = await model.generateContent(prompt);
-        return JSON.parse(result.response.text());
+        return await callGemini(prompt);
 
     } catch (error: any) {
-        console.error("Ops Analysis API Error (Falling back to local):", error.message);
+        console.error("Gemini Ops Analysis Error:", error.message);
 
-        // -- ROBUST LOCAL FALLBACK (Simulation of AI) --
-        // This ensures the user NEVER sees an error, even if Rate Limited (429) or Network Down.
-
+        // Fallback
         const lowerQ = query.toLowerCase();
         let text = "I've analyzed the local sensor data.";
         const actions: any[] = [];
 
         if (lowerQ.includes('add') && lowerQ.includes('truck')) {
-            text += " Increasing fleet capacity in high-demand sectors.";
-            actions.push({ type: 'ADD_TRUCK', target: 'Sector A (High Load)' });
-        } else if (lowerQ.includes('remove') || lowerQ.includes('delete')) {
-            text += " Identifying idle assets for decommissioning.";
-            actions.push({ type: 'REMOVE_TRUCK', target: 'Idle Unit' });
-        } else if (lowerQ.includes('shed') || lowerQ.includes('center') || lowerQ.includes('bin') || lowerQ.includes('garbage')) {
-            text += " Hotspot detected. Recommending permanent infrastructure.";
-            actions.push({ type: 'INSTALL_SHED', target: 'Analyzed Hotspot' });
-        } else if (lowerQ.includes('route') || lowerQ.includes('reroute') || lowerQ.includes('fix') || lowerQ.includes('better')) {
-            text += " Route inefficiency detected. Recalculating with Traffic & Historical constraints.";
-            actions.push({ type: 'REROUTE', target: 'District Wide' });
-        } else {
-            text += " Monitoring system status. No critical anomalies requiring immediate intervention, but I can adjust the fleet if needed.";
+            text += " Increasing fleet capacity.";
+            actions.push({ type: 'ADD_TRUCK', target: 'Sector A' });
+        } else if (lowerQ.includes('route')) {
+            text += " Optimizing routes.";
+            actions.push({ type: 'REROUTE', target: 'District' });
         }
 
         return {
@@ -205,7 +236,6 @@ export async function suggestBinLocations(binsSummary: any[]) {
     try {
         if (!apiKey) throw new Error("No API Key");
 
-        const model = getModel(true);
         const prompt = `
         You are an Urban Planning AI.
         Analyze the following waste management data (sample of bins):
@@ -215,7 +245,7 @@ export async function suggestBinLocations(binsSummary: any[]) {
         
         Based on the fill levels (high fill = high demand) and clusters, identify the BEST location for a new Municipal Shed (Large capacity station).
         
-        Return JSON ONLY:
+        Return JSON ONLY (no markdown, no extra text):
         {
             "suggestedLat": number,
             "suggestedLng": number,
@@ -223,12 +253,10 @@ export async function suggestBinLocations(binsSummary: any[]) {
         }
         `;
 
-        const result = await model.generateContent(prompt);
-        return JSON.parse(result.response.text());
+        return await callGemini(prompt);
 
-    } catch (error) {
-        console.error("Bin Location AI Error:", error);
-        // Random fallback near center
+    } catch (error: any) {
+        console.error("Gemini Bin Location Error:", error.message);
         return {
             suggestedLat: 28.6139 + (Math.random() - 0.5) * 0.01,
             suggestedLng: 77.2090 + (Math.random() - 0.5) * 0.01,

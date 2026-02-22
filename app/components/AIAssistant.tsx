@@ -4,7 +4,7 @@ import { useState, useRef, useEffect } from 'react';
 import { Mic, Send, Bot, X, Sparkles, Play, Trash, Plus } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { cn } from '@/app/lib/utils';
-import { analyzeOperationsWithGemini } from '@/app/actions';
+import { analyzeOperations } from '@/app/actions';
 
 import { Vehicle, Alert, SimulationEngine } from '@/app/lib/simulation';
 
@@ -37,14 +37,14 @@ export default function AIAssistant({ vehicles, alerts, onAction }: AIAssistantP
         setQuery('');
         setIsTyping(true);
 
-        // Real Gemini Integration
+        // Real ChatGPT Integration
         const context = {
             vehicleCount: vehicles.length,
             activeAlerts: alerts.length,
             criticalAlerts: alerts.filter(a => a.severity === 'critical').length
         };
 
-        const res = await analyzeOperationsWithGemini(userMsg, context);
+        const res = await analyzeOperations(userMsg, context);
 
         setMessages(prev => [...prev, {
             role: 'ai',

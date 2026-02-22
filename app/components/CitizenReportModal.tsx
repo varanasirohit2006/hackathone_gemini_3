@@ -4,7 +4,7 @@ import { useState, useRef } from 'react';
 import { Camera, Upload, X, MapPin, Send, Mic, Loader, CheckCircle, Volume2, Sparkles, AlertCircle } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { SimulationEngine } from '@/app/lib/simulation';
-import { analyzeImageWithGemini } from '@/app/actions';
+import { analyzeImage } from '@/app/actions';
 
 export default function CitizenReportModal({ onClose, onReport }: { onClose: () => void, onReport: (data: any) => void }) {
     const [step, setStep] = useState(1);
@@ -27,13 +27,41 @@ export default function CitizenReportModal({ onClose, onReport }: { onClose: () 
         fileInputRef.current?.click();
     };
 
-    const onFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    // Compress image to reduce payload size for server action
+    const compressImage = (dataUrl: string, maxWidth = 800, quality = 0.7): Promise<string> => {
+        return new Promise((resolve) => {
+            const img = new Image();
+            img.onload = () => {
+                const canvas = document.createElement('canvas');
+                let width = img.width;
+                let height = img.height;
+
+                // Scale down if too large
+                if (width > maxWidth) {
+                    height = (height * maxWidth) / width;
+                    width = maxWidth;
+                }
+
+                canvas.width = width;
+                canvas.height = height;
+                const ctx = canvas.getContext('2d')!;
+                ctx.drawImage(img, 0, 0, width, height);
+                resolve(canvas.toDataURL('image/jpeg', quality));
+            };
+            img.src = dataUrl;
+        });
+    };
+
+    const onFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
         if (e.target.files && e.target.files[0]) {
             const file = e.target.files[0];
             const reader = new FileReader();
-            reader.onload = (ev) => {
+            reader.onload = async (ev) => {
                 const src = ev.target?.result as string;
-                processImage(src);
+                // Compress before sending to server
+                const compressed = await compressImage(src);
+                console.log(`📏 Image compressed: ${(src.length / 1024).toFixed(0)}KB → ${(compressed.length / 1024).toFixed(0)}KB`);
+                processImage(compressed);
             };
             reader.readAsDataURL(file);
         }
@@ -50,15 +78,15 @@ export default function CitizenReportModal({ onClose, onReport }: { onClose: () 
         console.log("🖼️ Starting Image Analysis...");
 
         try {
-            // Real Gemini Action
-            let res = await analyzeImageWithGemini(imgSrc);
-            console.log("📊 Gemini Response:", res);
+            // Real ChatGPT Action
+            let res = await analyzeImage(imgSrc);
+            console.log("📊 ChatGPT Response:", res);
 
             // Fallback if API key missing or error
             if (res.error) {
-                console.warn("⚠️ Gemini Error:", res.message);
+                console.warn("⚠️ ChatGPT Error:", res.message);
                 console.log("🔄 Falling back to simulation...");
-                res = await SimulationEngine.geminiAnalysis('image', imgSrc);
+                res = await SimulationEngine.aiAnalysis('image', imgSrc);
             }
 
             setAnalysis(res);
@@ -221,7 +249,7 @@ export default function CitizenReportModal({ onClose, onReport }: { onClose: () 
     };
 
     const handleSubmit = () => {
-        // Ensure we always send something meaningful to Gemini / alert engine
+        // Ensure we always send something meaningful to ChatGPT / alert engine
         const finalDesc = desc || (audioTranscript ? `🎤 Voice Report:\n${audioTranscript.trim()}` : 'Citizen reported an issue');
 
         onReport({
@@ -247,7 +275,7 @@ export default function CitizenReportModal({ onClose, onReport }: { onClose: () 
                 {/* Header */}
                 <div className="p-4 bg-slate-950 border-b border-primary/20 flex justify-between items-center bg-gradient-to-r from-primary/10 to-transparent">
                     <h2 className="font-bold text-white flex items-center gap-2">
-                        <Sparkles className="text-primary" size={20} /> Gemini AI Citizen App
+                        <Sparkles className="text-primary" size={20} /> ChatGPT AI Citizen App
                         <span className="text-[10px] bg-green-500/20 text-green-400 border border-green-500/30 px-2 py-0.5 rounded-full uppercase tracking-wider">
                             Live
                         </span>
@@ -337,11 +365,10 @@ export default function CitizenReportModal({ onClose, onReport }: { onClose: () 
                             <button
                                 onClick={() => setStep(2)}
                                 disabled={!audioTranscript && !desc && !analysis}
-                                className={`w-full py-2.5 rounded-lg text-sm font-semibold flex items-center justify-center gap-2 border transition-colors ${
-                                    (!audioTranscript && !desc && !analysis)
-                                        ? 'bg-slate-900 text-slate-500 border-slate-800 cursor-not-allowed'
-                                        : 'bg-slate-800 hover:bg-slate-700 text-white border-slate-600'
-                                }`}
+                                className={`w-full py-2.5 rounded-lg text-sm font-semibold flex items-center justify-center gap-2 border transition-colors ${(!audioTranscript && !desc && !analysis)
+                                    ? 'bg-slate-900 text-slate-500 border-slate-800 cursor-not-allowed'
+                                    : 'bg-slate-800 hover:bg-slate-700 text-white border-slate-600'
+                                    }`}
                             >
                                 <Send size={14} /> Next: Review & Submit
                             </button>
@@ -356,7 +383,7 @@ export default function CitizenReportModal({ onClose, onReport }: { onClose: () 
                                     <div className="relative h-40 rounded-xl overflow-hidden border border-slate-700">
                                         <img src={image} className="w-full h-full object-cover" />
                                         <div className="absolute bottom-2 right-2 bg-black/80 text-green-400 text-xs px-2 py-1 rounded flex items-center gap-1">
-                                            <Sparkles size={10} /> Gemini AI
+                                            <Sparkles size={10} /> ChatGPT AI
                                         </div>
                                     </div>
 
@@ -415,7 +442,7 @@ export default function CitizenReportModal({ onClose, onReport }: { onClose: () 
                             <div className="w-16 h-16 rounded-full border-4 border-slate-800 border-t-primary animate-spin"></div>
                             <Sparkles className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-primary" />
                         </div>
-                        <div className="text-white font-bold text-lg mb-1">Gemini AI Processing</div>
+                        <div className="text-white font-bold text-lg mb-1">ChatGPT AI Processing</div>
                         <div className="text-slate-400 text-sm">Analyzing image with AI vision...</div>
                     </div>
                 )}

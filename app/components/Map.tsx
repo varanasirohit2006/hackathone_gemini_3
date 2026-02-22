@@ -1,6 +1,6 @@
 'use client';
 
-import { MapContainer, TileLayer, Marker, Popup, Polyline, useMapEvents } from 'react-leaflet';
+import { MapContainer, TileLayer, Marker, Popup, Polyline, Circle, useMapEvents } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
 import { Bin, Vehicle, Alert, Location } from '@/app/lib/simulation';
 import { useEffect, useMemo, useState } from 'react';
@@ -22,12 +22,12 @@ const customIcon = L.icon({
     shadowSize: [41, 41]
 });
 
-// Helper for dynamic truck SVG icons
-const createTruckIcon = (color: string) => L.divIcon({
-    html: `<div style="background-color: ${color}; box-shadow: 0 0 10px ${color};" class="w-5 h-5 rounded-full border-2 border-white flex items-center justify-center text-[8px] font-bold text-black animate-pulse">T</div>`,
+// Helper for dynamic truck icons with number label
+const createTruckIcon = (color: string, num: number) => L.divIcon({
+    html: `<div style="background-color: ${color}; box-shadow: 0 0 12px ${color};" class="w-6 h-6 rounded-full border-2 border-white flex items-center justify-center text-[10px] font-black text-black">${num}</div>`,
     className: 'custom-truck-icon',
-    iconSize: [20, 20],
-    iconAnchor: [10, 10]
+    iconSize: [24, 24],
+    iconAnchor: [12, 12]
 });
 
 const binCriticalIcon = L.divIcon({
@@ -57,7 +57,11 @@ interface MapProps {
     alerts: Alert[];
     dumpyardLocation?: Location | null;
     onMapClick?: (lat: number, lng: number) => void;
+    showHealthOverlay?: boolean;
+    center?: [number, number];
+    onSolveAlert?: (alert: Alert) => void;
 }
+
 
 function MapClickHandler({ onMapClick }: { onMapClick: (lat: number, lng: number) => void }) {
     useMapEvents({
@@ -68,18 +72,18 @@ function MapClickHandler({ onMapClick }: { onMapClick: (lat: number, lng: number
     return null;
 }
 
-// Helper to recenter map when truck is focused
+// Helper to recenter map when truck is focused or city changes
 function MapUpdater({ center, zoom }: { center: [number, number] | null, zoom?: number }) {
     const map = useMapEvents({});
     useEffect(() => {
         if (center) {
-            map.flyTo(center, zoom || 15, { animate: true, duration: 1.5 });
+            map.flyTo(center, zoom || 13, { animate: true, duration: 1.5 });
         }
-    }, [center, map, zoom]);
+    }, [center?.[0], center?.[1], map, zoom]);
     return null;
 }
 
-export default function Map({ bins, vehicles, alerts, dumpyardLocation, onMapClick }: MapProps) {
+export default function Map({ bins, vehicles, alerts, dumpyardLocation, onMapClick, showHealthOverlay, center, onSolveAlert }: MapProps) {
     const [isMounted, setIsMounted] = useState(false);
     const [mapKey] = useState(`map-${Date.now()}`);
 
@@ -156,7 +160,7 @@ export default function Map({ bins, vehicles, alerts, dumpyardLocation, onMapCli
             </div>
 
             {/* Legend bottom-right */}
-            <div className="absolute bottom-3 right-3 z-[500] bg-black/75 border border-slate-700 rounded-lg px-3 py-2 text-[10px] text-slate-300 space-y-1">
+            <div className="absolute bottom-3 right-3 z-[500] bg-black/80 border border-slate-700 rounded-lg px-3 py-2 text-[10px] text-slate-300 space-y-1">
                 <div className="font-semibold text-[11px] mb-1">Legend</div>
                 <div className="flex items-center gap-2">
                     <span className="w-3 h-3 rounded-full bg-green-500 border border-white/60 inline-block" /> Normal Bin
@@ -170,26 +174,37 @@ export default function Map({ bins, vehicles, alerts, dumpyardLocation, onMapCli
                 <div className="flex items-center gap-2">
                     <span className="w-4 h-0.5 bg-sky-400 inline-block" /> Truck Route
                 </div>
+                <div className="border-t border-slate-700 my-1 pt-1 text-[9px] font-bold text-slate-400 uppercase tracking-wider">Alert Types</div>
                 <div className="flex items-center gap-2">
-                    <span className="w-2 h-2 rounded-full bg-red-500 inline-block" /> Risk Alert
+                    <span className="w-4 h-4 rounded-full bg-blue-600 text-white text-[8px] font-black flex items-center justify-center border border-white">C</span> Citizen Report
+                </div>
+                <div className="flex items-center gap-2">
+                    <span className="w-4 h-4 rounded-full bg-orange-600 text-white text-[8px] font-black flex items-center justify-center border border-white">B</span> Breakdown
+                </div>
+                <div className="flex items-center gap-2">
+                    <span className="w-4 h-4 rounded-full bg-red-600 text-white text-[8px] font-black flex items-center justify-center border border-white">!</span> Overflow Alert
+                </div>
+                <div className="flex items-center gap-2">
+                    <span className="w-4 h-4 rounded-full bg-yellow-500 text-black text-[8px] font-black flex items-center justify-center border border-white">H</span> Hazardous
                 </div>
             </div>
 
             <MapContainer
                 key={mapKey}
-                center={[28.6139, 77.2090]}
+                center={center || [28.6139, 77.2090]}
                 zoom={13}
                 style={{ height: '100%', width: '100%', borderRadius: '0.5rem' }}
             >
                 <TileLayer
-                    attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-                    url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+                    attribution='Tiles &copy; Esri &mdash; Source: Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community'
+                    url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
                     className="map-tiles"
                 />
 
-                {/* Focus Logic */}
+                {/* City Center + Focus Logic */}
                 <MapUpdater
-                    center={focusedVehicle ? [focusedVehicle.lat, focusedVehicle.lng] : null}
+                    center={center || (focusedVehicle ? [focusedVehicle.lat, focusedVehicle.lng] : null)}
+                    zoom={focusedVehicle ? 15 : 13}
                 />
 
                 {/* Render Bins */}
@@ -218,22 +233,32 @@ export default function Map({ bins, vehicles, alerts, dumpyardLocation, onMapCli
 
                 {/* Render Alerts (Citizen Reports, Hazards) */}
                 {showAlerts && alerts.map((alert) => {
-                    if (!alert.coordinates) return null; // Skip if no geo-data
+                    if (!alert.coordinates) return null;
 
                     const isCritical = alert.severity === 'critical';
                     const pulseClass = isCritical ? 'animate-ping' : '';
 
-                    // Custom Alert Icon
+                    // Color-coded alert icons by type
+                    const alertColors: Record<string, { bg: string, ring: string, label: string }> = {
+                        'citizen_report': { bg: 'bg-blue-600', ring: 'bg-blue-400', label: 'C' },
+                        'breakdown': { bg: 'bg-orange-600', ring: 'bg-orange-400', label: 'B' },
+                        'overflow': { bg: 'bg-red-600', ring: 'bg-red-500', label: '!' },
+                        'hazard': { bg: 'bg-yellow-500', ring: 'bg-yellow-400', label: 'H' },
+                        'delay': { bg: 'bg-purple-600', ring: 'bg-purple-400', label: 'D' },
+                        'fraud': { bg: 'bg-pink-600', ring: 'bg-pink-400', label: 'F' },
+                    };
+                    const colors = alertColors[alert.type] || alertColors['overflow'];
+
                     const alertIcon = L.divIcon({
-                        html: `<div class="relative flex items-center justify-center w-6 h-6">
-                             <div class="absolute w-full h-full bg-red-500 rounded-full opacity-50 ${pulseClass}"></div>
-                             <div class="relative z-10 text-white bg-red-600 rounded-full p-1 border border-white shadow-lg">
-                               <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"></path><path d="M12 9v4"></path><path d="M12 17h.01"></path></svg>
+                        html: `<div class="relative flex items-center justify-center w-7 h-7">
+                             <div class="absolute w-full h-full ${colors.ring} rounded-full opacity-50 ${pulseClass}"></div>
+                             <div class="relative z-10 text-white ${colors.bg} rounded-full w-5 h-5 flex items-center justify-center border-2 border-white shadow-lg text-[10px] font-black">
+                               ${colors.label}
                              </div>
                            </div>`,
                         className: 'custom-alert-icon',
-                        iconSize: [24, 24],
-                        iconAnchor: [12, 12]
+                        iconSize: [28, 28],
+                        iconAnchor: [14, 14]
                     });
 
                     return (
@@ -249,7 +274,16 @@ export default function Map({ bins, vehicles, alerts, dumpyardLocation, onMapCli
                                         <span className="text-[10px] bg-red-100 text-red-800 px-1 rounded border border-red-200">{alert.severity}</span>
                                     </div>
                                     <p className="text-sm font-medium leading-tight mb-1">{alert.message}</p>
-                                    <div className="text-xs text-slate-500">{alert.timestamp}</div>
+                                    <div className="text-xs text-slate-500 mb-2">{alert.timestamp}</div>
+                                    {onSolveAlert && (
+                                        <button
+                                            onClick={() => onSolveAlert(alert)}
+                                            className="w-full py-1.5 bg-slate-900 border border-slate-700 text-white rounded text-[10px] font-bold hover:bg-black transition-colors flex items-center justify-center gap-1"
+                                        >
+                                            <svg className="w-3 h-3 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
+                                            SOLVE WITH GEMINI AI
+                                        </button>
+                                    )}
                                 </div>
                             </Popup>
                         </Marker>
@@ -260,26 +294,50 @@ export default function Map({ bins, vehicles, alerts, dumpyardLocation, onMapCli
                 {vehicles.map((v) => {
                     const isFocused = focusedTruckId === v.id;
                     const shouldDim = focusedTruckId !== null && !isFocused;
+                    const isReturning = v.status === 'returning';
+
+                    // Build the full path: truck position → each waypoint
+                    const fullPath: [number, number][] = [
+                        [v.lat, v.lng],
+                        ...v.currentRoute.map(p => [p.lat, p.lng] as [number, number])
+                    ];
 
                     return (
                         <div key={v.id}>
-                            {/* Active Route Path */}
-                            {(showRoutes || v.status === 'returning') && v.currentRoute.length > 0 && (
+                            {/* Route Line */}
+                            {(showRoutes || isReturning) && v.currentRoute.length > 0 && (
                                 <Polyline
-                                    positions={[[v.lat, v.lng], ...v.currentRoute.map(p => [p.lat, p.lng] as [number, number])]}
+                                    positions={fullPath}
                                     pathOptions={{
-                                        color: v.status === 'returning' ? '#ef4444' : (v.color || '#3b82f6'), // Red for returning
+                                        color: isReturning ? '#ef4444' : (v.color || '#3b82f6'),
                                         weight: isFocused ? 6 : 3,
-                                        dashArray: v.status === 'returning' ? '5, 5' : (isFocused ? undefined : '1, 6'),
-                                        opacity: shouldDim ? 0.2 : 0.7,
-                                        lineCap: 'round'
+                                        dashArray: isReturning ? '10, 8' : undefined,
+                                        opacity: shouldDim ? 0.1 : (isReturning ? 0.7 : 0.9),
+                                        lineCap: 'round',
+                                        lineJoin: 'round'
                                     }}
                                 />
                             )}
 
+                            {/* Destination stop markers (small dots at each assigned bin location) */}
+                            {showRoutes && !isReturning && v.currentRoute.map((stop, idx) => (
+                                <Circle
+                                    key={`${v.id}-stop-${idx}`}
+                                    center={[stop.lat, stop.lng]}
+                                    radius={40}
+                                    pathOptions={{
+                                        color: v.color || '#3b82f6',
+                                        fillColor: v.color || '#3b82f6',
+                                        fillOpacity: shouldDim ? 0.05 : 0.6,
+                                        weight: shouldDim ? 0 : 2,
+                                        opacity: shouldDim ? 0 : 0.8
+                                    }}
+                                />
+                            ))}
+
                             <Marker
                                 position={[v.lat, v.lng]}
-                                icon={createTruckIcon(v.color || '#3b82f6')}
+                                icon={createTruckIcon(v.color || '#3b82f6', vehicles.indexOf(v) + 1)}
                                 eventHandlers={{
                                     click: () => setFocusedTruckId(isFocused ? null : v.id)
                                 }}
@@ -335,10 +393,25 @@ export default function Map({ bins, vehicles, alerts, dumpyardLocation, onMapCli
                 {/* Click Handler for manual placement */}
                 {onMapClick && <MapClickHandler onMapClick={onMapClick} />}
 
-                {/* Google Maps Note */}
+                {/* Health Overlay (Heatmap Simulation) */}
+                {showHealthOverlay && bins.filter(b => b.fillLevel > 50).map((bin) => (
+                    <Circle
+                        key={`health-${bin.id}`}
+                        center={[bin.lat, bin.lng]}
+                        radius={300 + (bin.fillLevel * 5)} // Larger radius for higher fill
+                        pathOptions={{
+                            color: 'red',
+                            fillColor: '#ef4444',
+                            fillOpacity: 0.2,
+                            weight: 0
+                        }}
+                    />
+                ))}
+
+                {/* Map Attribution */}
                 <div className="leaflet-bottom leaflet-left" style={{ pointerEvents: 'none', marginBottom: '20px', marginLeft: '10px' }}>
-                    <div className="bg-white/80 backdrop-blur px-2 py-1 rounded text-[10px] text-slate-600 shadow border border-slate-300">
-                        Map Data © OpenStreetMap contributors
+                    <div className="bg-black/70 backdrop-blur px-2 py-1 rounded text-[10px] text-slate-300 shadow border border-slate-700">
+                        Satellite Imagery © Esri
                     </div>
                 </div>
             </MapContainer>
